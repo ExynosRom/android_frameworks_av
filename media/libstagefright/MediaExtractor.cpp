@@ -88,6 +88,7 @@ public:
     virtual void close();
     virtual uint32_t getFlags();
     virtual String8 toString();
+    virtual sp<DecryptHandle> DrmInitialization(const char *mime);
 
 private:
     sp<IMemory> mMemory;
@@ -134,6 +135,10 @@ String8 RemoteDataSource::toString() {
     return mName;
 }
 
+sp<DecryptHandle> RemoteDataSource::DrmInitialization(const char *mime) {
+    return mSource->DrmInitialization(mime);
+}
+
 // static
 sp<IMediaExtractor> MediaExtractor::Create(
         const sp<DataSource> &source, const char *mime) {
@@ -146,10 +151,6 @@ sp<IMediaExtractor> MediaExtractor::Create(
         ALOGW("creating media extractor in calling process");
         return CreateFromService(source, mime);
     } else {
-        // remote extractor
-        ALOGV("get service manager");
-        sp<IBinder> binder = defaultServiceManager()->getService(String16("media.extractor"));
-
         // Check if it's WVM, since WVMExtractor needs to be created in the media server process,
         // not the extractor process.
         String8 mime8;
@@ -159,6 +160,21 @@ sp<IMediaExtractor> MediaExtractor::Create(
                 !strcasecmp(mime8, MEDIA_MIMETYPE_CONTAINER_WVM)) {
             return new WVMExtractor(source);
         }
+
+        // Check if it's es-based DRM, since DRMExtractor needs to be created in the media server
+        // process, not the extractor process.
+        if (SniffDRM(source, &mime8, &confidence, &meta)) {
+            const char *drmMime = mime8.string();
+            ALOGV("Detected media content as '%s' with confidence %.2f", drmMime, confidence);
+            if (!strncmp(drmMime, "drm+es_based+", 13)) {
+                // DRMExtractor sets container metadata kKeyIsDRM to 1
+                return new DRMExtractor(source, drmMime + 14);
+            }
+        }
+
+        // remote extractor
+        ALOGV("get service manager");
+        sp<IBinder> binder = defaultServiceManager()->getService(String16("media.extractor"));
 
         if (binder != 0) {
             sp<IMediaExtractorService> mediaExService(interface_cast<IMediaExtractorService>(binder));
